@@ -11,7 +11,6 @@ from pathlib import Path
 
 from sms_auditado import executar_consulta, URL_LOGIN
 
-
 app = FastAPI(title="BBTS SMS Consulta")
 
 app.add_middleware(
@@ -23,9 +22,6 @@ app.add_middleware(
 
 OUTPUTS_DIR = Path("outputs")
 OUTPUTS_DIR.mkdir(exist_ok=True)
-
-STATIC_DIR = Path("static")
-STATIC_DIR.mkdir(exist_ok=True)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -43,26 +39,14 @@ class ConsultaRequest(BaseModel):
 
 @app.get("/")
 def index():
-    index_path = STATIC_DIR / "index.html"
-    if index_path.exists():
-        return FileResponse(str(index_path))
-    return {
-        "ok": True,
-        "message": "API online. Coloque o index.html dentro da pasta static."
-    }
-
-
-def atualizar_job(job_id: str, msg: str, pct: int):
-    if job_id in jobs:
-        jobs[job_id]["msg"] = msg
-        jobs[job_id]["pct"] = pct
+    return FileResponse("static/index.html")
 
 
 def run_consulta(job_id: str, req: ConsultaRequest):
     try:
         jobs[job_id]["status"] = "processing"
-        jobs[job_id]["msg"] = "Preparando consulta..."
-        jobs[job_id]["pct"] = 5
+        jobs[job_id]["pct"] = 10
+        jobs[job_id]["msg"] = "Executando consulta..."
 
         resultado = executar_consulta(
             numeros=req.numeros,
@@ -71,36 +55,30 @@ def run_consulta(job_id: str, req: ConsultaRequest):
             url_login=req.url_login,
             t_login=req.t_login,
             t_token=req.t_token,
-            outputs_dir=str(OUTPUTS_DIR),
-            headless=True,
-            progress_cb=lambda msg, pct: atualizar_job(job_id, msg, pct)
+            headless=True
         )
 
-        zip_name = f"resultado_{job_id}.zip"
-        zip_path = OUTPUTS_DIR / zip_name
+        jobs[job_id]["pct"] = 85
+        jobs[job_id]["msg"] = "Compactando arquivos..."
+
+        zip_path = OUTPUTS_DIR / f"resultado_{job_id}.zip"
 
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            excel_path = resultado.get("excel_path")
-            screenshot_path = resultado.get("screenshot_path")
+            if resultado.get("excel_path") and Path(resultado["excel_path"]).exists():
+                zipf.write(resultado["excel_path"], arcname=Path(resultado["excel_path"]).name)
 
-            if excel_path and Path(excel_path).exists():
-                zipf.write(excel_path, arcname=Path(excel_path).name)
-
-            if screenshot_path and Path(screenshot_path).exists():
-                zipf.write(screenshot_path, arcname=Path(screenshot_path).name)
+            if resultado.get("screenshot_path") and Path(resultado["screenshot_path"]).exists():
+                zipf.write(resultado["screenshot_path"], arcname=Path(resultado["screenshot_path"]).name)
 
         jobs[job_id]["status"] = "done"
         jobs[job_id]["pct"] = 100
-        jobs[job_id]["msg"] = "Consulta concluída!"
+        jobs[job_id]["msg"] = "Consulta finalizada com sucesso."
         jobs[job_id]["zip"] = str(zip_path)
-        jobs[job_id]["records"] = resultado.get("total_registros", 0)
 
     except Exception as e:
         jobs[job_id]["status"] = "error"
-        jobs[job_id]["msg"] = f"Erro: {str(e)}"
+        jobs[job_id]["msg"] = str(e)
         jobs[job_id]["pct"] = 100
-        jobs[job_id]["zip"] = None
-        jobs[job_id]["records"] = 0
 
 
 @app.post("/consultar")
@@ -111,12 +89,10 @@ def iniciar_consulta(req: ConsultaRequest, background_tasks: BackgroundTasks):
         "status": "queued",
         "pct": 0,
         "msg": "Na fila...",
-        "zip": None,
-        "records": 0
+        "zip": None
     }
 
     background_tasks.add_task(run_consulta, job_id, req)
-
     return {"job_id": job_id}
 
 
@@ -132,10 +108,7 @@ def status(job_id: str):
 def download(job_id: str):
     job = jobs.get(job_id)
 
-    if not job:
-        raise HTTPException(status_code=404, detail="Job não encontrado")
-
-    if job.get("status") != "done":
+    if not job or job.get("status") != "done":
         raise HTTPException(status_code=400, detail="Job não concluído")
 
     zip_path = job.get("zip")
@@ -143,7 +116,7 @@ def download(job_id: str):
         raise HTTPException(status_code=404, detail="Arquivo não encontrado")
 
     return FileResponse(
-        path=zip_path,
+        zip_path,
         media_type="application/zip",
         filename=Path(zip_path).name
     )
@@ -151,6 +124,5 @@ def download(job_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run("main:app", host="0.0.0.0", port=port)

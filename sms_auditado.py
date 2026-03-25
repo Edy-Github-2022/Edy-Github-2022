@@ -1,11 +1,9 @@
-from pathlib import Path
-from datetime import datetime
-from typing import Callable, Optional
+from playwright.sync_api import sync_playwright
 import re
 import time
-
 import pandas as pd
-from playwright.sync_api import sync_playwright
+from datetime import datetime
+from pathlib import Path
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -14,29 +12,10 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.formatting.rule import Rule
 from openpyxl.styles.differential import DifferentialStyle
 
-
 URL_LOGIN = "https://bbts.bestuse.com.br/#!/login"
 
 
-# =========================================================
-# Helpers de progresso
-# =========================================================
-def _report_progress(progress_cb: Optional[Callable[[str, int], None]], msg: str, pct: int):
-    if progress_cb:
-        try:
-            progress_cb(msg, pct)
-        except Exception:
-            pass
-
-
-# =========================================================
-# Helpers Web
-# =========================================================
 def esperar_tabela(page, seletor_tabela="table.table.table-striped.table-hover", timeout_ms=45000):
-    """
-    Espera pela presença da tabela (thead e pelo menos 1 linha em tbody).
-    Retorna (headers, total_linhas).
-    """
     page.wait_for_selector(seletor_tabela, state="attached", timeout=timeout_ms)
     page.wait_for_selector(f"{seletor_tabela} thead th", state="visible", timeout=timeout_ms)
 
@@ -63,12 +42,6 @@ def esperar_tabela(page, seletor_tabela="table.table.table-striped.table-hover",
 
 
 def abrir_e_capturar_pdu_no_row(row):
-    """
-    Para a linha atual:
-    - Se existir link 'Ver PDU': clica e aguarda o <pre>;
-    - Se já estiver 'Ocultar PDU': só lê o <pre>;
-    - Retorna o texto do <pre>, ou "".
-    """
     try:
         row.scroll_into_view_if_needed()
     except Exception:
@@ -103,13 +76,6 @@ def abrir_e_capturar_pdu_no_row(row):
 
 
 def extrair_tabela(page, seletor_tabela="table.table.table-striped.table-hover"):
-    """
-    Extrai dados da tabela:
-    - lê headers;
-    - lê cada linha;
-    - se houver coluna PDU, abre e captura o conteúdo;
-    - retorna (headers, dados).
-    """
     headers, total_linhas = esperar_tabela(page, seletor_tabela=seletor_tabela)
     dados = []
 
@@ -155,40 +121,12 @@ def extrair_tabela(page, seletor_tabela="table.table.table-striped.table-hover")
     return headers, dados
 
 
-def _fill_first_available(page, selectors, value: str) -> bool:
-    for selector in selectors:
-        try:
-            loc = page.locator(selector)
-            if loc.count() > 0:
-                loc.first.fill("")
-                loc.first.fill(value)
-                return True
-        except Exception:
-            pass
-    return False
-
-
-def _click_first_available(page, selectors) -> bool:
-    for selector in selectors:
-        try:
-            loc = page.locator(selector)
-            if loc.count() > 0:
-                loc.first.click()
-                return True
-        except Exception:
-            pass
-    return False
-
-
-# =========================================================
-# Helpers Excel
-# =========================================================
 def classificar_transacao(mensagem: str) -> str:
     if not isinstance(mensagem, str) or mensagem.strip() == "":
         return "Sem Transação"
 
     texto = mensagem.lower()
-    tem_valor = bool(re.search(r"r\$\s\d", texto, flags=re.IGNORECASE))
+    tem_valor = bool(re.search(r"r\$\s*\d", texto, flags=re.IGNORECASE))
 
     termos_transacao = [
         "pix", "ted", "doc",
@@ -250,14 +188,15 @@ def aplicar_formatacao_excel(excel_path: str, sheet_name: str = "Dados"):
 
     thin = Side(border_style="thin", color="FFBFBFBF")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
     for row in ws[used_range]:
         for cell in row:
             cell.border = border
 
     for col_letter in ("J", "K"):
-        if ws[col_letter + "1"].value is not None:
-            for col_cells in ws[f"{col_letter}1:{col_letter}{last_row}"]:
-                for cell in col_cells:
+        if ws[f"{col_letter}1"].value is not None:
+            for row in ws[f"{col_letter}1:{col_letter}{last_row}"]:
+                for cell in row:
                     cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     ws.freeze_panes = "A2"
@@ -276,11 +215,9 @@ def aplicar_formatacao_excel(excel_path: str, sheet_name: str = "Dados"):
         "K": 88,
         "L": 22,
     }
+
     for col_letter, width in widths.items():
-        try:
-            ws.column_dimensions[col_letter].width = width
-        except Exception:
-            pass
+        ws.column_dimensions[col_letter].width = width
 
     if last_row >= 2:
         status_range = f"I2:I{last_row}"
@@ -295,7 +232,7 @@ def aplicar_formatacao_excel(excel_path: str, sheet_name: str = "Dados"):
             add_contains_text_rule(status_range, t, "FFFF0000")
 
         for t in ["EXPIRADO", "Expirado"]:
-            add_contains_text_rule(status_range, t, "FFFF00")
+            add_contains_text_rule(status_range, t, "FFFFFF00")
 
         for t in ["ENTREGUE", "Entregue"]:
             add_contains_text_rule(status_range, t, "FF00B050")
@@ -307,52 +244,98 @@ def aplicar_formatacao_excel(excel_path: str, sheet_name: str = "Dados"):
     wb.close()
 
 
-# =========================================================
-# Função principal reutilizável
-# =========================================================
 def executar_consulta(
     numeros: str,
-    usuario: str = "",
-    senha: str = "",
+    usuario: str,
+    senha: str,
     url_login: str = URL_LOGIN,
     t_login: int = 15,
     t_token: int = 30,
-    outputs_dir: str = "outputs",
-    headless: bool = True,
-    progress_cb: Optional[Callable[[str, int], None]] = None
+    headless: bool = True
 ):
-    """
-    Executa a consulta e retorna:
-    {
-        "headers": [...],
-        "dados": [...],
-        "excel_path": "...",
-        "screenshot_path": "...",
-        "total_registros": 0
-    }
-    """
-    numeros_limpos = re.sub(r"[^\d\n]", "", numeros or "").strip()
-    if not numeros_limpos:
-        raise ValueError("Nenhum número válido foi informado.")
-
-    output_dir = Path(outputs_dir)
-    output_dir.mkdir(exist_ok=True)
-
-    primeiro_numero = numeros_limpos.splitlines()[0].strip() if numeros_limpos.splitlines() else "consulta"
+    numero_base = re.sub(r"\D", "", numeros.splitlines()[0] if numeros.strip() else "consulta")
     agora = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    excel_path = output_dir / f"sms_consulta_celular_{primeiro_numero}_{agora}.xlsx"
-    screenshot_path = output_dir / f"evidencia_consulta_celular_{primeiro_numero}_{agora}.png"
+    output_dir = Path("outputs")
+    output_dir.mkdir(exist_ok=True)
 
-    headers = []
+    excel_path = output_dir / f"sms_consulta_celular_{numero_base}_{agora}.xlsx"
+    screenshot_path = output_dir / f"evidencia_consulta_celular_{numero_base}_{agora}.png"
+
     dados = []
-    browser = None
+    headers = []
 
-    try:
-        _report_progress(progress_cb, "Iniciando navegador...", 10)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless, slow_mo=250)
+        page = browser.new_page()
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=headless,
-                args=[
-                    "--no-sandbox",
+        page.goto(url_login)
+        page.wait_for_load_state("networkidle")
+
+        print("⏳ Aguardando login...")
+        time.sleep(t_login)
+
+        print("⏳ Aguardando token...")
+        time.sleep(t_token)
+
+        print("➡️ Abrindo menu 'Relatórios'...")
+        page.locator('a[show-menu="relatorios"]').click()
+        page.wait_for_timeout(500)
+
+        print("➡️ Acessando 'Consulta Celular'...")
+        page.locator('a[ui-sref="consultaCelular"]').click()
+
+        page.wait_for_selector("#inputTelefone", state="visible", timeout=20000)
+        textarea = page.locator("#inputTelefone")
+        textarea.fill("")
+        textarea.fill(numeros.strip())
+
+        print("🔍 Consultando...")
+        btn = page.get_by_role("button", name=re.compile(r"Consultar", re.I))
+        if btn.count() == 0:
+            btn = page.locator("button:has-text('Consultar')")
+        btn.first.click()
+
+        print("⏳ Aguardando e extraindo tabela...")
+        headers, dados = extrair_tabela(page)
+
+        page.screenshot(path=str(screenshot_path), full_page=True)
+        browser.close()
+
+    if dados:
+        df = pd.DataFrame(dados)
+    else:
+        df = pd.DataFrame()
+
+    if "Sms do arquivo" in df.columns:
+        df["Transação Financeira"] = df["Sms do arquivo"].apply(classificar_transacao)
+    else:
+        df["Transação Financeira"] = "Sem Transação"
+
+    df = garantir_ordem_colunas(df)
+
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Dados")
+
+    aplicar_formatacao_excel(str(excel_path), sheet_name="Dados")
+
+    return {
+        "headers": headers,
+        "dados": dados,
+        "excel_path": str(excel_path),
+        "screenshot_path": str(screenshot_path),
+        "total": len(df)
+    }
+
+
+if __name__ == "__main__":
+    resultado = executar_consulta(
+        numeros="27997738508",
+        usuario="",
+        senha="",
+        url_login=URL_LOGIN,
+        t_login=15,
+        t_token=30,
+        headless=False
+    )
+    print(resultado)
