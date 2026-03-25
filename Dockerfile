@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Deps do sistema para Playwright/Chromium
+# Instalar dependências necessárias para o Playwright/Chromium
 RUN apt-get update && apt-get install -y \
     wget gnupg ca-certificates \
     libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
@@ -18,9 +18,8 @@ COPY . .
 
 RUN mkdir -p outputs static
 
-# ❌ Remover EXPOSE 8000
-# ✅ Deixar sem porta fixa para Railway usar ${PORT}
+# ✅ O Railway usa $PORT automaticamente
 EXPOSE 8080
 
-# ❌ Remover CMD fixo que sobrepõe o Start Command
-# ✅ Não coloque CMD aqui – o Railway vai usar o Custom Start Command
+# ✅ O mais importante: usar exec form e variável direta
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]
