@@ -1,5 +1,6 @@
 FROM python:3.11-slim
 
+# Instalar dependências do sistema de uma vez só
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -28,11 +29,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Instala apenas o executável do chromium
 RUN playwright install chromium
-RUN playwright install-deps chromium
 
 COPY . .
 
 RUN mkdir -p outputs static
 
+# Comando de inicialização
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
