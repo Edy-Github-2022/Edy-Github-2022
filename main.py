@@ -99,4 +99,3 @@ def download(job_id: str):
 
 # -------------------------------------------------
 # A função run_consulta deve permanecer IGUAL à sua
-``
